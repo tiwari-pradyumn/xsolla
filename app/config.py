@@ -1,0 +1,17 @@
+import os
+
+VERSION = "1.0.0"
+SPEC_VERSION = "1.0"
+
+MAX_PAYLOAD_BYTES = 1048576
+CHUNK_BYTES = 65536
+MAX_CONCURRENT_JOBS = 4
+RATE_LIMIT_PER_MINUTE = 30
+
+DEFAULT_MAX_FINDINGS = 100
+
+AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "dev-token")
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+LLM_MODEL = os.environ.get("LLM_MODEL", "gemini-2.0-flash")
+LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "20"))
