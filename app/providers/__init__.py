@@ -1,8 +1,10 @@
 from app.providers.base import Provider, ProviderError
+from app.providers.llm import LlmProvider
 from app.providers.mock import MockProvider
 
 _PROVIDERS: dict[str, Provider] = {
     "mock": MockProvider(),
+    "llm": LlmProvider(),
 }
 
 DEFAULT_PROVIDER = "mock"
