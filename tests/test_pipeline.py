@@ -3,10 +3,12 @@ idempotency, concurrency, rate limiting and injection inertness."""
 
 import asyncio
 import json
+import math
 
 from app.chunking import chunk_files
 from app.config import CHUNK_BYTES
 from app.diff import parse_diff
+from app.findings import normalize
 from app.providers.mock import scan_files
 from tests.conftest import AUTH, file_section, parse_sse, read_stream, submit, wait_done
 
@@ -120,6 +122,23 @@ def test_single_file_larger_than_the_limit_is_its_own_chunk():
     assert chunks[1] == [parsed.files[1]]
 
 
+# _big_diff plants exactly two findings in every file, at known lines: an
+# eval on the 8th added line and a console.log on the 24th. That construction
+# -- not a second call to the scanner -- is the source of truth below.
+BIG_DIFF_FILES = 40
+EXPECTED_BIG_FINDINGS = [
+    (f"src/file{i:03d}.ts", line, rule)
+    for i in range(BIG_DIFF_FILES)
+    for line, rule in ((8, "MOCK-001"), (24, "MOCK-007"))
+]
+
+
+def test_big_diff_fixture_plants_the_findings_it_claims_to():
+    parsed = parse_diff(_big_diff())
+    found = [(f.path, f.line, f.rule_id) for f in normalize(scan_files(parsed.files))]
+    assert found == EXPECTED_BIG_FINDINGS
+
+
 def test_chunked_scan_equals_unchunked_scan():
     parsed = parse_diff(_big_diff())
     unchunked = scan_files(parsed.files)
@@ -127,8 +146,6 @@ def test_chunked_scan_equals_unchunked_scan():
     merged = []
     for chunk in chunk_files(parsed.files):
         merged.extend(scan_files(chunk))
-
-    from app.findings import normalize
 
     assert normalize(merged) == normalize(unchunked)
     assert len({f.id for f in merged}) == len(merged)  # no duplicates across chunks
@@ -138,12 +155,15 @@ async def test_large_diff_reports_chunk_count_and_identical_findings(client):
     diff = _big_diff()
     body = await wait_done(client, await submit(client, diff, maxFindings=1000))
 
-    expected = scan_files(parse_diff(diff).files)
-    from app.findings import normalize
+    assert [
+        (f["path"], f["line"], f["ruleId"]) for f in body["findings"]
+    ] == EXPECTED_BIG_FINDINGS
 
-    assert body["usage"]["chunks"] == len(chunk_files(parse_diff(diff).files))
-    assert body["usage"]["chunks"] > 1
-    assert [f["id"] for f in body["findings"]] == [f.id for f in normalize(expected)]
+    # Chunk count is bounded by arithmetic on the payload, not by asking the
+    # chunker: no chunk may exceed the limit, and no file is split.
+    lower_bound = math.ceil(len(diff.encode()) / CHUNK_BYTES)
+    assert lower_bound > 1
+    assert lower_bound <= body["usage"]["chunks"] <= BIG_DIFF_FILES
 
 
 # --- SSE ----------------------------------------------------------------
