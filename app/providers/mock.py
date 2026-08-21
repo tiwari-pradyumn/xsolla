@@ -28,6 +28,8 @@ CREDENTIAL_RE = re.compile(
     r"""(api[_-]?key|secret|token)\s*[:=]\s*['"][A-Za-z0-9_\-]{16,}['"]""", re.I
 )
 
+LOOSE_NULL_RE = re.compile(r"(?<![=!<>])(?:==|!=)(?!=)\s*null\b")
+
 SQL_KEYWORD_RE = re.compile(r"\b(SELECT|INSERT|UPDATE|DELETE)\b", re.I)
 
 # Whitespace-only body; the catch binding is optional (JS allows `catch {}`).
@@ -84,11 +86,11 @@ def _line_rules(text: str) -> list[str]:
         hits.append("MOCK-002")
     if _sql_concat(text):
         hits.append("MOCK-003")
-    # Literal trigger, same shape as MOCK-001's `eval(`: the table says
-    # `== null` or `!= null`, and the table is scored exactly. Knowingly
-    # fires on `=== null` (it contains `== null`) and skips `x==null` (no
-    # space) -- the title says "loose", but the trigger column binds.
-    if "== null" in text or "!= null" in text:
+    # Semantic reading of the trigger: it names the loose operators, so
+    # spacing is irrelevant (`x==null` fires), while `===`/`!==` are different
+    # operators and `nullable` is a different identifier (neither fires). The
+    # lookarounds reject a third `=` on either side;  rejects `nullable`.
+    if LOOSE_NULL_RE.search(text):
         hits.append("MOCK-005")
     if "JSON.parse(JSON.stringify(" in text:
         hits.append("MOCK-006")

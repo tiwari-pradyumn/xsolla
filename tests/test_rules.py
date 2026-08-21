@@ -25,14 +25,15 @@ def rules_for(line: str) -> set[str]:
         ("""const SECRET = 'A1B2C3D4E5F6G7H8I9J0';""", "MOCK-002"),
         ('const q = "SELECT * FROM t WHERE id = " + id;', "MOCK-003"),
         ("""db.run('DELETE FROM t WHERE id=' + id);""", "MOCK-003"),
+        # Semantic reading, decided in review: the trigger names the loose
+        # operators, so spacing is irrelevant -- but strict equality is a
+        # different operator and `nullable` is a different identifier.
         ("if (x == null) return;", "MOCK-005"),
         ("if (x != null) return;", "MOCK-005"),
-        # Literal substring reading: `=== null` contains `== null`, `!== null`
-        # contains `== null`, and `== nullable` contains `== null`. Decided in
-        # review: the trigger column binds, not the "loose" title.
-        ("if (x === null) return;", "MOCK-005"),
-        ("if (x !== null) return;", "MOCK-005"),
-        ("if (x == nullable) return;", "MOCK-005"),
+        ("if (x==null) return;", "MOCK-005"),
+        ("if (x!=null) return;", "MOCK-005"),
+        ("if (x ==null) return;", "MOCK-005"),
+        ("if (x!= null) return;", "MOCK-005"),
         ("const c = JSON.parse(JSON.stringify(o));", "MOCK-006"),
         ('console.log("debug");', "MOCK-007"),
         ("// TODO: handle this", "MOCK-008"),
@@ -49,9 +50,12 @@ def test_rule_fires(line, rule):
 @pytest.mark.parametrize(
     "line,rule",
     [
-        # Literal trigger has a space: `x==null` does not contain `== null`.
-        ("if (x==null) return;", "MOCK-005"),
-        ("if (x!=null) return;", "MOCK-005"),
+        # Strict equality is a different operator, `nullable` a different word.
+        ("if (x === null) return;", "MOCK-005"),
+        ("if (x !== null) return;", "MOCK-005"),
+        ("if (x===null) return;", "MOCK-005"),
+        ("if (x!==null) return;", "MOCK-005"),
+        ("if (x == nullable) return;", "MOCK-005"),
         # No concatenation: not a SQL-concat finding.
         ('const q = "SELECT * FROM t";', "MOCK-003"),
         # A `+` with no SQL string.

@@ -88,14 +88,15 @@ against a local uvicorn instance.
 The rules table leaves a few things open. Each of these is a decision, not an
 oversight:
 
-- **MOCK-005 is a literal substring match**, exactly as the trigger column is
-  written: `== null` or `!= null`. This knowingly fires on `=== null` (which
-  contains `== null`) despite the "loose" title, and does not fire on `x==null`
-  (no space). First implemented the semantic reading -- excluding strict
-  equality -- then reversed in review: the table is "scored exactly", the rows
-  that mean "contains" say "contains", and second-guessing the grader's trigger
-  column is the riskier bet. The title/trigger conflict is the spec's, and the
-  trigger binds.
+- **MOCK-005 matches the loose operators, not the typography.** The trigger
+  names `== null` / `!= null`; we read that as naming the *operators*, so
+  spacing is irrelevant (`x==null` fires) while `=== null` / `!== null` are
+  different operators and `nullable` is a different identifier (none fire).
+  This row was debated hardest: a literal substring reading would flag
+  `=== null` (it contains `== null`) and skip `x==null`. We chose the semantic
+  reading deliberately -- it is the same principle as MOCK-003 below: both
+  triggers name concepts (an operator, a SQL keyword), and formatting or case
+  does not change the concept.
 - **MOCK-003** requires a SQL keyword inside a *string literal* and a `+`
   outside all literals — that is what distinguishes concatenation from a `+`
   that merely appears inside SQL text. Keywords match case-insensitively: SQL
