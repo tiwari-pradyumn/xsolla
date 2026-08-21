@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the floor the README declares; 3.12 is what the Dockerfile
+        # actually ships. Both are tested because a green suite on one says
+        # nothing about the other.
+        python: ["3.11", "3.12"]
+    env:
+      # The suite never reaches a real model, but config.py refuses to import
+      # without a token. CI must not depend on a .env file.
+      AUTH_TOKEN: ci-token
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests with coverage
+        # The fail-under gate lives in .coveragerc, so this is the same command
+        # a developer runs locally.
+        run: pytest -q --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-py${{ matrix.python }}
+          path: coverage.xml
+          if-no-files-found: error
+
+  image:
+    name: docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        # Railway builds from this Dockerfile, so a build failure here is a
+        # deploy failure there. Catch it before main moves.
+        run: docker build -t diff-review:ci .
+
+      - name: Boot it and check /health
+        # Proves the image starts, reads AUTH_TOKEN from the environment and
+        # serves the contract -- not just that it compiles.
+        run: |
+          docker run -d --name probe -p 8000:8000 -e AUTH_TOKEN=ci-token diff-review:ci
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/health >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -fsS http://localhost:8000/health
+          curl -fsS http://localhost:8000/spec
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/v1/reviews/x)" = 401
+
+      - name: Container logs
+        if: always()
+        run: docker logs probe || true
+
+      - name: Stop the container
+        if: always()
+        run: docker rm -f probe || true
+
+  startup-safety:
+    name: refuses to start without AUTH_TOKEN
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t diff-review:ci .
+
+      - name: Expect a non-zero exit
+        # ADR: an unset token must stop the process rather than serve an open
+        # API. A unit test asserts the RuntimeError; this asserts the container
+        # actually dies, which is the behaviour a deploy depends on.
+        run: |
+          if docker run --rm diff-review:ci; then
+            echo "::error::container started with no AUTH_TOKEN"
+            exit 1
+          fi
