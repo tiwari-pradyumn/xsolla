@@ -21,10 +21,9 @@ jobs:
         # actually ships. Both are tested because a green suite on one says
         # nothing about the other.
         python: ["3.11", "3.12"]
-    env:
-      # The suite never reaches a real model, but config.py refuses to import
-      # without a token. CI must not depend on a .env file.
-      AUTH_TOKEN: ci-token
+    # No AUTH_TOKEN here: conftest.py sets one before app.config is imported,
+    # and it must be the same value the tests send. An env entry on this job
+    # would win over conftest's setdefault and 401 every authenticated test.
     steps:
       - uses: actions/checkout@v4
 
