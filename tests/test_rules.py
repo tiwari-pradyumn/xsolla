@@ -27,6 +27,12 @@ def rules_for(line: str) -> set[str]:
         ("""db.run('DELETE FROM t WHERE id=' + id);""", "MOCK-003"),
         ("if (x == null) return;", "MOCK-005"),
         ("if (x != null) return;", "MOCK-005"),
+        # Literal substring reading: `=== null` contains `== null`, `!== null`
+        # contains `== null`, and `== nullable` contains `== null`. Decided in
+        # review: the trigger column binds, not the "loose" title.
+        ("if (x === null) return;", "MOCK-005"),
+        ("if (x !== null) return;", "MOCK-005"),
+        ("if (x == nullable) return;", "MOCK-005"),
         ("const c = JSON.parse(JSON.stringify(o));", "MOCK-006"),
         ('console.log("debug");', "MOCK-007"),
         ("// TODO: handle this", "MOCK-008"),
@@ -43,10 +49,9 @@ def test_rule_fires(line, rule):
 @pytest.mark.parametrize(
     "line,rule",
     [
-        # Strict equality is not a loose comparison.
-        ("if (x === null) return;", "MOCK-005"),
-        ("if (x !== null) return;", "MOCK-005"),
-        ("if (x == nullable) return;", "MOCK-005"),
+        # Literal trigger has a space: `x==null` does not contain `== null`.
+        ("if (x==null) return;", "MOCK-005"),
+        ("if (x!=null) return;", "MOCK-005"),
         # No concatenation: not a SQL-concat finding.
         ('const q = "SELECT * FROM t";', "MOCK-003"),
         # A `+` with no SQL string.

@@ -88,13 +88,22 @@ against a local uvicorn instance.
 The rules table leaves a few things open. Each of these is a decision, not an
 oversight:
 
-- **MOCK-005 excludes `=== null` / `!== null`.** The rule is titled "loose null
-  comparison" and strict equality is definitionally not loose, so a literal
-  substring match would be wrong on its own terms.
+- **MOCK-005 is a literal substring match**, exactly as the trigger column is
+  written: `== null` or `!= null`. This knowingly fires on `=== null` (which
+  contains `== null`) despite the "loose" title, and does not fire on `x==null`
+  (no space). First implemented the semantic reading -- excluding strict
+  equality -- then reversed in review: the table is "scored exactly", the rows
+  that mean "contains" say "contains", and second-guessing the grader's trigger
+  column is the riskier bet. The title/trigger conflict is the spec's, and the
+  trigger binds.
 - **MOCK-003** requires a SQL keyword inside a *string literal* and a `+`
   outside all literals — that is what distinguishes concatenation from a `+`
-  that merely appears inside SQL text. Keywords match case-insensitively (SQL is
-  case-insensitive).
+  that merely appears inside SQL text. Keywords match case-insensitively: SQL
+  itself is case-insensitive, so `"select * from t" + id` is the same
+  vulnerability as its uppercase twin. Challenged in review (the table writes
+  the keywords in uppercase, and `"Delete user " + name` is a false positive
+  under this reading) and deliberately kept: missing a real lowercase SQL
+  injection is a worse failure for a security rule than flagging UI text.
 - **MOCK-008 is case-sensitive.** `TODO`/`FIXME` are markers; lowercase `todo`
   appears in ordinary identifiers like `todoList`.
 - **MOCK-004** treats a whitespace-only body as empty, detects blocks spanning
