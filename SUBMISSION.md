@@ -60,11 +60,12 @@ model outage still succeeds (covered by a test).
 
 ## How the cross-cutting behaviours were verified
 
-158 tests (`pytest`, no network) plus `scripts/smoke.py`, which re-runs the same
-checks against a *running* service over real HTTP — SSE in particular behaves
-differently through an in-process transport than through uvicorn, so the
+192 tests (`pytest`, no network) at 99.8% branch coverage, gated at 95% in
+`.coveragerc` and enforced by CI, plus `scripts/smoke.py`, which re-runs the
+same checks against a *running* service over real HTTP — SSE in particular
+behaves differently through an in-process transport than through uvicorn, so the
 in-process suite alone would not have been evidence. All 34 smoke checks pass
-against a local uvicorn instance.
+against a local uvicorn instance and against the built Docker image.
 
 - **Chunking** — a generated 40-file diff is scanned whole and per-chunk, and
   the normalised results are asserted equal; separately, chunk sizes stay under

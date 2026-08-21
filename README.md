@@ -101,9 +101,48 @@ to 100 and truncates the ordered list.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest              # 158 tests, no network needed
+.venv/bin/python -m pytest              # 192 tests, no network needed
+.venv/bin/python -m pytest --no-cov     # same, without the coverage pass
 .venv/bin/python scripts/smoke.py http://localhost:8000 my-token
 ```
 
 `scripts/smoke.py` runs the same checks against a *running* service over real
 HTTP; run it against the deployed URL before relying on it.
+
+Coverage is on by default (`addopts = --cov` in `pytest.ini`) so a local run
+gates exactly as CI does. Branch coverage is **99.8%**, and `.coveragerc` fails
+the run below 95%. The one uncovered line is
+[app/jobs.py:218](app/jobs.py#L218) — see *Known dead code* below.
+
+## CI/CD
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request:
+
+- **tests** on Python 3.11 and 3.12 — the floor the README declares and the
+  version the Dockerfile ships, because a green suite on one says nothing about
+  the other. Coverage XML is uploaded as an artifact.
+- **docker image** — builds the Dockerfile Railway builds from, boots the
+  container, and checks `/health`, `/spec` and a 401 on `/v1`. A build failure
+  here is a deploy failure there.
+- **startup-safety** — asserts the container *exits non-zero* with no
+  `AUTH_TOKEN`. A unit test covers the `RuntimeError`; this covers the
+  behaviour a deploy actually depends on.
+
+Deployment is Railway's own GitHub integration, so `main` deploys itself. CI is
+therefore a gate on what reaches `main`, not the thing that ships it.
+
+`.github/workflows/smoke.yml` closes that loop: it runs `scripts/smoke.py`
+against the live URL, on demand (`workflow_dispatch`, with the base URL as an
+input) and daily at 07:00 UTC. It needs a repository secret
+`SMOKE_AUTH_TOKEN` holding the bearer token — the token is never committed,
+since this repository is public.
+
+## Known dead code
+
+[app/jobs.py:218](app/jobs.py#L218) — the `seen` set in `_run_scan` deduplicates
+findings across flushes, but a path's findings are flushed exactly once: files
+are sorted by path, so all sections of one path are contiguous, and a path is
+only flushed when the next chunk starts at a later path. `normalize()` already
+removes duplicates within that single flush, so this branch cannot be reached.
+It is left in place rather than removed because it is the guard that would
+matter if the flush rule ever changed.
