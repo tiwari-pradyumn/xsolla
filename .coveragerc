@@ -1,0 +1,14 @@
+# Companion to pytest.ini. `--cov` flags live in pytest.ini so that a bare
+# `pytest` measures coverage the same way CI does.
+[run]
+source = app
+branch = True
+
+[report]
+show_missing = True
+# CI gates on this. Raise it when coverage rises; never lower it to make a
+# build pass.
+fail_under = 95
+exclude_also =
+    # A Protocol method body is a signature, not code.
+    ^\s*\.\.\.$

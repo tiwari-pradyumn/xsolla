@@ -288,3 +288,14 @@ def test_no_source_site_invents_an_error_code():
     assert found, "found no error-code call sites -- the scan is broken, not the code"
     unpublished = {code: site for code, site in found.items() if code not in PUBLISHED_CODES}
     assert not unpublished, f"error codes outside the published taxonomy: {unpublished}"
+
+
+@pytest.mark.parametrize("body", [b"[1, 2, 3]", b'"a string"', b"42", b"null"])
+async def test_valid_json_that_is_not_an_object_is_400(client, body):
+    """Parseable JSON of the wrong shape is a body problem, not a diff problem:
+    there is no `diff` field to complain about."""
+    resp = await client.post(
+        "/v1/reviews", content=body, headers={**AUTH, "Content-Type": "application/json"}
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "invalid_json"

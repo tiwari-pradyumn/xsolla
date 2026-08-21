@@ -162,6 +162,40 @@ async def test_an_unexpected_response_shape_fails_the_provider(monkeypatch):
         await LlmProvider().scan(FILES)
 
 
+@pytest.mark.parametrize(
+    "text,reason",
+    [
+        ('{"findings": "all good"}', "findings is not an array"),
+        ('{"findings": {"path": "src/a.ts"}}', "findings is an object"),
+        ('{"result": []}', "no findings key at all"),
+        ('["src/a.ts"]', "top level is not an object"),
+    ],
+)
+async def test_a_findings_array_is_required(monkeypatch, text, reason):
+    """Valid JSON of the wrong shape is still unusable. It fails the provider
+    rather than being read as zero findings, because a job reporting `done` with
+    an empty list would claim the diff was reviewed and found clean."""
+    install(monkeypatch, response=model_returns_text(text))
+    with pytest.raises(ProviderError, match="findings array"):
+        await LlmProvider().scan(FILES)
+
+
+async def test_a_non_json_http_body_fails_the_provider(monkeypatch):
+    """A 200 carrying an error page or a proxy interstitial -- the status line
+    says success, so only parsing the body catches it."""
+    install(
+        monkeypatch,
+        response=httpx.Response(
+            200,
+            content=b"<html><body>502 Bad Gateway</body></html>",
+            headers={"content-type": "text/html"},
+            request=httpx.Request("POST", "http://model"),
+        ),
+    )
+    with pytest.raises(ProviderError, match="non-JSON HTTP body"):
+        await LlmProvider().scan(FILES)
+
+
 async def test_missing_credentials_fail_the_provider(monkeypatch):
     install(monkeypatch, response=model_says([]), key="")
     with pytest.raises(ProviderError, match="GEMINI_API_KEY"):

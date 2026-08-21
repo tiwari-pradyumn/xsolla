@@ -276,3 +276,104 @@ def test_hunk_body_must_match_declared_counts(text):
 def test_non_diff_input_is_rejected(text):
     with pytest.raises(InvalidDiff):
         parse_diff(text)
+
+
+# --- parser tolerance, continued ----------------------------------------
+
+
+def test_quoted_paths_are_unquoted():
+    """Git quotes a path when it contains characters needing escaping."""
+    diff = (
+        '--- "a/src/odd name.ts"\n'
+        '+++ "b/src/odd name.ts"\n'
+        "@@ -0,0 +1,1 @@\n"
+        "+eval(x);\n"
+    )
+    assert parse_diff(diff).files[0].path == "src/odd name.ts"
+
+
+def test_no_newline_marker_inside_an_unfinished_hunk_is_skipped():
+    """The marker sits between a removal and an addition, so it is seen while
+    the hunk still has lines outstanding -- it must not be counted as one."""
+    diff = (
+        "--- a/src/a.ts\n+++ b/src/a.ts\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-old;\n"
+        "\\ No newline at end of file\n"
+        "+eval(x);\n"
+    )
+    parsed = parse_diff(diff)
+    assert [f.rule_id for f in scan_files(parsed.files)] == ["MOCK-001"]
+
+
+def test_an_unparseable_git_header_falls_back_to_the_path_lines():
+    diff = (
+        "diff --git nonsense\n"
+        "--- a/src/a.ts\n+++ b/src/a.ts\n"
+        "@@ -0,0 +1,1 @@\n"
+        "+eval(x);\n"
+    )
+    assert parse_diff(diff).files[0].path == "src/a.ts"
+
+
+def test_a_hunk_with_no_path_headers_is_parsed_as_an_unknown_path():
+    """A fragment pasted without its headers still scans; findings are anchored
+    to `unknown` rather than dropped."""
+    parsed = parse_diff("@@ -0,0 +1,1 @@\n+eval(x);\n")
+    assert parsed.files[0].path == "unknown"
+    assert [f.path for f in scan_files(parsed.files)] == ["unknown"]
+
+
+def test_a_leading_binary_section_needs_no_headers():
+    parsed = parse_diff("Binary files a/img.png and b/img.png differ\n")
+    assert parsed.files[0].binary is True
+    assert scan_files(parsed.files) == []
+
+
+def test_a_zero_length_hunk_header_carries_no_body():
+    """`@@ -0,0 +0,0 @@` declares nothing, so the lines after it belong to the
+    next section rather than to this hunk."""
+    diff = (
+        "--- a/src/a.ts\n+++ b/src/a.ts\n"
+        "@@ -0,0 +0,0 @@\n"
+        "--- a/src/b.ts\n+++ b/src/b.ts\n"
+        "@@ -0,0 +1,1 @@\n"
+        "+eval(x);\n"
+    )
+    parsed = parse_diff(diff)
+    assert [f.path for f in parsed.files] == ["src/a.ts", "src/b.ts"]
+    assert [f.path for f in scan_files(parsed.files)] == ["src/b.ts"]
+
+
+# --- parser strictness --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text,reason",
+    [
+        ("--- a/x.js\n+++ b/x.js\n@@ -1,1 +1,1 @@\n-a\n-b\n+c\n", "too many removed lines"),
+        ("--- a/x.js\n+++ b/x.js\n@@ -1,1 +1,1 @@\n+a\n+b\n-c\n", "too many added lines"),
+        ("--- a/x.js\n+++ b/x.js\n@@ -1,1 +1,2 @@\n a\n b\n", "too many context lines"),
+        ("--- a/x.js\n+++ b/x.js\n@@ -0,0 +1,2 @@\n+a\nstray text\n", "body ended early"),
+    ],
+)
+def test_each_way_a_hunk_body_can_contradict_its_header(text, reason):
+    """Every over- and under-fill is rejected by its own guard, so a diff can
+    never be half-accepted with lines silently dropped or misnumbered."""
+    with pytest.raises(InvalidDiff, match="hunk"):
+        parse_diff(text)
+
+
+# --- the string masker --------------------------------------------------
+
+
+def test_an_escaped_quote_does_not_end_a_string_literal():
+    """Without escape handling the literal would close at the inner quote, and
+    the SQL keyword would be read as bare source instead of string content."""
+    assert "MOCK-003" in rules_for(r'const q = "a \" SELECT * FROM t" + id;')
+
+
+def test_a_parenthesised_literal_at_the_start_of_a_line_is_not_a_call():
+    """Unwrapping grouping parentheses walks left off the start of the line;
+    there is no callee there, and no `+` either, so this is not concatenation."""
+    assert "MOCK-003" not in rules_for('(("SELECT * FROM t"));')

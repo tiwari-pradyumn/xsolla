@@ -9,3 +9,8 @@ venv/
 dist/
 build/
 .DS_Store
+
+# Coverage artifacts
+.coverage
+coverage.xml
+htmlcov/

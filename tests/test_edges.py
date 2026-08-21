@@ -140,3 +140,26 @@ async def test_max_findings_of_zero_yields_an_empty_but_complete_job(client):
     # The scan still happened: usage describes the whole input.
     assert body["usage"]["inputBytes"] == len(FIVE.encode())
     assert body["usage"]["chunks"] == 1
+
+
+# --- a body that does not declare its size ------------------------------
+
+
+async def test_undeclared_oversized_body_is_still_rejected(client):
+    """The Content-Length shortcut is an optimisation, not the guard. A chunked
+    upload declares no length at all, so the cap has to hold while the body is
+    still arriving -- and it must stop reading rather than buffer the whole
+    thing first."""
+
+    async def chunked():
+        for _ in range(3):
+            yield b"x" * (MAX_PAYLOAD_BYTES // 2)
+
+    resp = await client.post(
+        "/v1/reviews",
+        content=chunked(),
+        headers={**AUTH, "Content-Type": "application/json"},
+    )
+    assert "content-length" not in {k.lower() for k in resp.request.headers}
+    assert resp.status_code == 413
+    assert resp.json()["error"]["code"] == "payload_too_large"
