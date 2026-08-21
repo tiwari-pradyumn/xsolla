@@ -14,7 +14,7 @@ python -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt      # Windows: .venv\Scripts\pip
 cp .env.example .env                               # set AUTH_TOKEN, GEMINI_API_KEY
 
-AUTH_TOKEN=my-token .venv/bin/uvicorn app.main:app --port 8000
+.venv/bin/uvicorn app.main:app --port 8000
 ```
 
 Or with Docker:
@@ -34,12 +34,20 @@ jobs.
 |---|---|---|---|
 | `AUTH_TOKEN` | yes | `dev-token` | Bearer token for every `/v1/*` route |
 | `GEMINI_API_KEY` | for `llm` | empty | Google Gemini key; without it `llm` jobs fail cleanly |
-| `LLM_MODEL` | no | `gemini-2.0-flash` | Model id for the `llm` provider |
+| `LLM_MODEL` | no | `gemini-3.5-flash-lite` | Model id for the `llm` provider |
 | `LLM_TIMEOUT_SECONDS` | no | `20` | Per-request model timeout |
 | `PORT` | no | `8000` | Listen port |
 
+`config.py` calls `load_dotenv()` at import, so a local `.env` is read
+automatically. Real environment variables win over `.env`, which is how a
+container's injected secrets stay authoritative. `.env` is gitignored; never
+commit a key.
+
 Model access lives entirely on the server. Callers send only the bearer token
-and never an LLM key.
+and never an LLM key. `gemini-3.5-flash-lite` is the default because it answers
+a single-chunk review in under two seconds, comfortably inside the 30-second
+job budget; the larger `gemini-3.6-flash` took 4-22s and returned 503s under
+load.
 
 ## Endpoints
 
@@ -80,7 +88,7 @@ to 100 and truncates the ordered list.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest              # 108 tests, no network needed
+.venv/bin/python -m pytest              # 122 tests, no network needed
 .venv/bin/python scripts/smoke.py http://localhost:8000 my-token
 ```
 

@@ -54,7 +54,7 @@ model outage still succeeds (covered by a test).
 
 ## How the cross-cutting behaviours were verified
 
-108 tests (`pytest`, no network) plus `scripts/smoke.py`, which re-runs the same
+122 tests (`pytest`, no network) plus `scripts/smoke.py`, which re-runs the same
 checks against a *running* service over real HTTP — SSE in particular behaves
 differently through an in-process transport than through uvicorn, so the
 in-process suite alone would not have been evidence. All 33 smoke checks pass
@@ -121,7 +121,17 @@ burst" should live given `/spec` has no field for it, and the MOCK-004 ambiguity
 — which surfaced the decisions above *before* any code existed. That interview
 produced `PLAN.md`, `CONTEXT.md` (a glossary that keeps "cache hit" and
 "idempotent replay" from being conflated) and the two ADRs. Implementation was
-then largely AI-written against that plan, test-first for the rules table.
+then largely AI-written against that plan.
+
+Being straight about the process: it was *not* test-first. The modules were
+written in one pass and the tests followed, which is why they all passed
+immediately — and a test that has never been seen failing has not shown it can
+detect anything. A later pass audited that. One test was found to be inert:
+it asserted `usage.chunks == len(chunk_files(...))`, comparing the service
+against the very function under test, so it passed by construction. Replacing
+`chunk_files` with `return [list(files)]` — disabling chunking entirely — left
+it green. It now derives its expectations from the fixture's construction and
+fails that mutation with `assert 4 <= 1`.
 
 **An AI suggestion I rejected:** the recommended stack was Node + TypeScript,
 argued from the mock rules being JS-flavoured and SSE being first-class there. I
@@ -140,10 +150,15 @@ and threatens the 30-second budget. That rules out free tiers that idle out
 unless paired with a keep-alive ping. My recommendation is a small always-on
 instance (Fly.io or a cheap VPS) over a tunnel to a laptop.
 
-**The `llm` path has been verified for structure and for graceful failure, but
-not yet end to end against a live Gemini key** — that must happen before
-submitting, via `scripts/smoke.py` against the deployed URL, which reports the
-`llm` job's terminal status explicitly.
+**The `llm` path is verified end to end** against a live Gemini key: a real
+review returns correctly anchored findings in ~1.6s, and `scripts/smoke.py`
+reports the job reaching `done`. Two failure modes were observed for real while
+getting there and both degraded exactly as designed — `gemini-2.0-flash` had
+been retired (HTTP 404) and `gemini-3.6-flash` returned 503 under load; each
+failed one job with a clear message and left the service healthy. The default
+model is `gemini-3.5-flash-lite`, chosen on measured latency: flash-lite answers
+in ~1.6s against 4-22s for `gemini-3.6-flash`, which matters against the
+30-second job budget.
 
 Skipped deliberately:
 
