@@ -168,24 +168,8 @@ mechanics are in [ADR-0005](docs/adr/0005-conflicting-contract-clauses.md):
 
 ## AI tools used
 
-Built with Claude Code (Claude Fable 5) throughout. The session began as a
-structured design interview over the brief rather than a code request: the
-questions that came back were about cache-hit jobId semantics, where "declared
-burst" should live given `/spec` has no field for it, and the MOCK-004 ambiguity
-— which surfaced the decisions above *before* any code existed. That interview
-produced `PLAN.md`, `CONTEXT.md` (a glossary that keeps "cache hit" and
-"idempotent replay" from being conflated) and the first two ADRs. Implementation was
-then largely AI-written against that plan.
-
-Being straight about the process: it was *not* test-first. The modules were
-written in one pass and the tests followed, which is why they all passed
-immediately — and a test that has never been seen failing has not shown it can
-detect anything. A later pass audited that. One test was found to be inert:
-it asserted `usage.chunks == len(chunk_files(...))`, comparing the service
-against the very function under test, so it passed by construction. Replacing
-`chunk_files` with `return [list(files)]` — disabling chunking entirely — left
-it green. It now derives its expectations from the fixture's construction and
-fails that mutation with `assert 4 <= 1`.
+Claude Code in VSCode (Fable 5 High, Opus 5 High) (Primary Actor and Development Workhorse)
+Cursor (GPT 5.6 Sol High) (Mostly used as a Critic, especially for Multi Agent Workflows checking for bugs, alternative superior implementation or possible risks)
 
 **An AI suggestion I rejected:** the recommended stack was Node + TypeScript,
 argued from the mock rules being JS-flavoured and SSE being first-class there. I
@@ -194,32 +178,10 @@ rejected it and chose Python + FastAPI. The reasoning is recorded in
 independent of the language *inside* the diff, so the JS-flavour argument was
 close to irrelevant, while the real constraint — that I have to defend every
 line of this in an interview — pointed the other way. The one genuine cost, that
-the MOCK-002 regex is JS syntax needing a careful port, is pinned by tests.
+the MOCK-002 regex is JS syntax needing a careful port, is pinned by tests. Moreover, AI suggested Northflank over Railway but I found Railway to be a more natural fit for this task. 
+
 
 ## What I skipped, and what's next
-
-**Deployment:** Railway, on its free trial tier, as a single always-on
-container built from the repo's Dockerfile. The choice followed from
-[ADR-0002](docs/adr/0002-in-memory-state.md): because state is in memory, the
-host must never scale to zero — a cold start both loses jobs and threatens the
-30-second budget. That ruled out Render's free tier (sleeps after 15 minutes,
-~60s cold start) and, as of 2026, Fly.io and Koyeb no longer offer free tiers to
-new accounts. Railway does not sleep, needs no card, and its 30-day trial credit
-outlasts the scoring window comfortably.
-
-All 34 smoke checks pass against the deployed URL, including a live `llm` job.
-
-**The `llm` path is verified end to end** against a live Gemini key: a real
-review returns correctly anchored findings in ~1.6s, and `scripts/smoke.py`
-reports the job reaching `done`. Two failure modes were observed for real while
-getting there and both degraded exactly as designed — `gemini-2.0-flash` had
-been retired (HTTP 404) and `gemini-3.6-flash` returned 503 under load; each
-failed one job with a clear message and left the service healthy. The default
-model is `gemini-3.5-flash-lite`, chosen on measured latency: flash-lite answers
-in ~1.6s against 4-22s for `gemini-3.6-flash`, which matters against the
-30-second job budget.
-
-Skipped deliberately:
 
 - **Persistence.** In-memory only; a restart loses jobs and the cache. Correct
   for a 48-hour single-instance window, wrong for production, and the first
