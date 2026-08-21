@@ -1,11 +1,17 @@
 # Submission
 
-> **To fill in before sending:** base URL and bearer token. Deployment is the one
-> deliberately deferred decision — see "Deployment" below.
+- **Base URL:** https://xsolla-production.up.railway.app
+- **Bearer token:** sent privately with the submission message. It is deliberately
+  not recorded here: this repository is public, and a token committed to it would
+  make the service open to anyone who reads the file.
+- **Repository:** https://github.com/tiwari-pradyumn/xsolla
 
-- **Base URL:** `_______`
-- **Bearer token:** `_______`
-- **Repository:** `_______`
+Health check, no auth required:
+
+```bash
+curl https://xsolla-production.up.railway.app/health
+curl https://xsolla-production.up.railway.app/spec
+```
 
 ## Architecture
 
@@ -154,11 +160,16 @@ the MOCK-002 regex is JS syntax needing a careful port, is pinned by tests.
 
 ## What I skipped, and what's next
 
-**Deployment is not yet decided.** The constraint is recorded: with in-memory
-state the host must never scale to zero, because a cold start both loses jobs
-and threatens the 30-second budget. That rules out free tiers that idle out
-unless paired with a keep-alive ping. My recommendation is a small always-on
-instance (Fly.io or a cheap VPS) over a tunnel to a laptop.
+**Deployment:** Railway, on its free trial tier, as a single always-on
+container built from the repo's Dockerfile. The choice followed from
+[ADR-0002](docs/adr/0002-in-memory-state.md): because state is in memory, the
+host must never scale to zero — a cold start both loses jobs and threatens the
+30-second budget. That ruled out Render's free tier (sleeps after 15 minutes,
+~60s cold start) and, as of 2026, Fly.io and Koyeb no longer offer free tiers to
+new accounts. Railway does not sleep, needs no card, and its 30-day trial credit
+outlasts the scoring window comfortably.
+
+All 33 smoke checks pass against the deployed URL, including a live `llm` job.
 
 **The `llm` path is verified end to end** against a live Gemini key: a real
 review returns correctly anchored findings in ~1.6s, and `scripts/smoke.py`
