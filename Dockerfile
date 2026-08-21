@@ -8,6 +8,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 
+# The app holds all state in memory and writes nothing to disk, so it has no
+# reason to run as root.
+RUN useradd --system --no-create-home appuser
+USER appuser
+
 EXPOSE 8000
 
 # Exactly one worker: jobs, cache, idempotency keys and SSE event logs are

@@ -1,0 +1,9 @@
+# Gitleaks config for the CI secret scan. Extends the default ruleset and
+# allowlists the one deliberate fake credential this repo contains: the
+# hardcoded-secret fixture that the MOCK-002 rule and the smoke suite exist
+# to detect. It is not a real key.
+[extend]
+useDefault = true
+
+[allowlist]
+regexes = ['''abcdef0123456789ABCDEF''']
