@@ -57,6 +57,7 @@ load.
 
 | Route | Auth | Purpose |
 |---|---|---|
+| `GET /` | public | Service index listing the routes below (convenience, not part of the contract) |
 | `GET /health` | public | `{status, version, uptimeSeconds}` |
 | `GET /spec` | public | Declared limits, which match actual behaviour |
 | `POST /v1/reviews` | bearer | Submit a diff, returns `202 {jobId, status:"queued"}` |
@@ -92,7 +93,7 @@ to 100 and truncates the ordered list.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest              # 130 tests, no network needed
+.venv/bin/python -m pytest              # 133 tests, no network needed
 .venv/bin/python scripts/smoke.py http://localhost:8000 my-token
 ```
 

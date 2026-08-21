@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from app.config import MAX_PAYLOAD_BYTES
+from app.config import MAX_PAYLOAD_BYTES, VERSION
 from tests.conftest import AUTH, file_section, submit
 
 SIMPLE = file_section("src/a.ts", ["eval(x);"])
@@ -157,3 +157,45 @@ def test_blank_auth_token_is_treated_as_unset(monkeypatch):
         monkeypatch.setenv("AUTH_TOKEN", "test-token")
         monkeypatch.undo()
         importlib.reload(app.config)
+
+
+# --- service index ------------------------------------------------------
+
+
+async def test_root_lists_the_contract_routes(client):
+    """`/` is a human convenience: opening the base URL in a browser should
+    explain the service rather than look broken."""
+    resp = await client.get("/")
+    assert resp.status_code == 200
+
+    body = resp.json()
+    assert body["service"]
+    assert body["version"] == VERSION
+
+    listed = {(r["method"], r["path"]) for r in body["routes"]}
+    assert listed == {
+        ("GET", "/health"),
+        ("GET", "/spec"),
+        ("POST", "/v1/reviews"),
+        ("GET", "/v1/reviews/{jobId}"),
+        ("GET", "/v1/reviews/{jobId}/stream"),
+    }
+    # Each entry says whether a bearer token is needed.
+    assert all(isinstance(r["auth"], bool) for r in body["routes"])
+    assert {r["path"] for r in body["routes"] if r["auth"]} == {
+        "/v1/reviews",
+        "/v1/reviews/{jobId}",
+        "/v1/reviews/{jobId}/stream",
+    }
+
+
+async def test_root_is_public(client):
+    assert (await client.get("/")).status_code == 200
+
+
+async def test_root_does_not_soften_unknown_routes(client):
+    """Adding an index must not turn 404s into 200s elsewhere."""
+    for path in ("/nope", "/v1", "/v1/", "/health/extra"):
+        resp = await client.get(path)
+        assert resp.status_code == 404, path
+        assert resp.json()["error"]["code"] == "not_found"

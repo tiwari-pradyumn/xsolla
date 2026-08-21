@@ -84,6 +84,51 @@ async def read_body_capped(request: Request) -> bytes:
 # --- public routes ------------------------------------------------------
 
 
+@app.get("/")
+async def index() -> JSONResponse:
+    """Public service index. Not part of the scored contract -- it exists so that
+    opening the base URL in a browser explains the service instead of returning
+    a bare 404. Unknown routes still 404 with the error envelope."""
+    return JSONResponse(
+        {
+            "service": "AI Diff Review Service",
+            "version": VERSION,
+            "routes": [
+                {
+                    "method": "GET",
+                    "path": "/health",
+                    "auth": False,
+                    "description": "Liveness, version and uptime.",
+                },
+                {
+                    "method": "GET",
+                    "path": "/spec",
+                    "auth": False,
+                    "description": "Machine-readable limits and providers.",
+                },
+                {
+                    "method": "POST",
+                    "path": "/v1/reviews",
+                    "auth": True,
+                    "description": "Submit a unified diff. Returns 202 with a jobId.",
+                },
+                {
+                    "method": "GET",
+                    "path": "/v1/reviews/{jobId}",
+                    "auth": True,
+                    "description": "Job status, findings when done, and usage.",
+                },
+                {
+                    "method": "GET",
+                    "path": "/v1/reviews/{jobId}/stream",
+                    "auth": True,
+                    "description": "Server-sent events: status, finding, done.",
+                },
+            ],
+        }
+    )
+
+
 @app.get("/health")
 async def health() -> JSONResponse:
     return JSONResponse(
