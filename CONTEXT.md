@@ -27,6 +27,10 @@ _Avoid_: idempotent replay, memoization
 **Coalescing**:
 A cache hit against a job that is still running: the new job awaits the original's completion instead of scanning.
 
+**Trigger form**:
+The level of precision a rule's trigger is stated at — literal fragment, explicit regex, or prose description — which is what decides how literally that rule is read.
+_Avoid_: rule syntax, matcher type
+
 **Chunk**:
 A ≤64 KiB slice of a diff split only on file boundaries; the unit a provider scans. A single file's diff never spans two chunks.
 

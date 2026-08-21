@@ -25,15 +25,14 @@ def rules_for(line: str) -> set[str]:
         ("""const SECRET = 'A1B2C3D4E5F6G7H8I9J0';""", "MOCK-002"),
         ('const q = "SELECT * FROM t WHERE id = " + id;', "MOCK-003"),
         ("""db.run('DELETE FROM t WHERE id=' + id);""", "MOCK-003"),
-        # Semantic reading, decided in review: the trigger names the loose
-        # operators, so spacing is irrelevant -- but strict equality is a
-        # different operator and `nullable` is a different identifier.
+        # The table writes MOCK-005 as a literal fragment, so it is matched
+        # literally (ADR-0003). The space is part of the trigger, and both
+        # `=== null` and `!== null` contain the fragment.
         ("if (x == null) return;", "MOCK-005"),
         ("if (x != null) return;", "MOCK-005"),
-        ("if (x==null) return;", "MOCK-005"),
-        ("if (x!=null) return;", "MOCK-005"),
-        ("if (x ==null) return;", "MOCK-005"),
         ("if (x!= null) return;", "MOCK-005"),
+        ("if (x === null) return;", "MOCK-005"),
+        ("if (x !== null) return;", "MOCK-005"),
         ("const c = JSON.parse(JSON.stringify(o));", "MOCK-006"),
         ('console.log("debug");', "MOCK-007"),
         ("// TODO: handle this", "MOCK-008"),
@@ -50,16 +49,25 @@ def test_rule_fires(line, rule):
 @pytest.mark.parametrize(
     "line,rule",
     [
-        # Strict equality is a different operator, `nullable` a different word.
-        ("if (x === null) return;", "MOCK-005"),
-        ("if (x !== null) return;", "MOCK-005"),
+        # Unspaced operators do not contain the literal fragment.
+        ("if (x==null) return;", "MOCK-005"),
+        ("if (x!=null) return;", "MOCK-005"),
+        ("if (x ==null) return;", "MOCK-005"),
         ("if (x===null) return;", "MOCK-005"),
         ("if (x!==null) return;", "MOCK-005"),
+        # The single carve-out on the literal reading: a trailing word character.
         ("if (x == nullable) return;", "MOCK-005"),
         # No concatenation: not a SQL-concat finding.
         ('const q = "SELECT * FROM t";', "MOCK-003"),
         # A `+` with no SQL string.
         ("const total = a + b;", "MOCK-003"),
+        # A `+` that is not an operand of the SQL literal: unrelated arithmetic
+        # sharing a line with a SQL string is not concatenation.
+        ('const q = "SELECT 1"; const total = a + b;', "MOCK-003"),
+        # `catch {}` as data rather than as a statement.
+        ('const msg = "catch {}";', "MOCK-004"),
+        ("// catch {}", "MOCK-004"),
+        ("/* catch (e) {} */", "MOCK-004"),
         # Lowercase marker is an ordinary identifier, not a TODO marker.
         ("const todoList = [];", "MOCK-008"),
         # Credential too short for the 16-char minimum.

@@ -1,8 +1,11 @@
 """The deterministic mock provider: the finding-rules table, implemented exactly.
 
 Rules apply to added lines only. `line` is the line number in the new file.
-Interpretation calls that the table leaves open are noted per rule and listed in
-SUBMISSION.md.
+
+Each trigger is implemented at the level of formality the task wrote it in
+(ADR-0003): a literal fragment is matched as a substring, an explicit regex is
+used as given, and a prose description is read semantically. That is why
+MOCK-005 is deliberately naive while MOCK-003 and MOCK-004 are not.
 """
 
 import asyncio
@@ -28,12 +31,18 @@ CREDENTIAL_RE = re.compile(
     r"""(api[_-]?key|secret|token)\s*[:=]\s*['"][A-Za-z0-9_\-]{16,}['"]""", re.I
 )
 
-LOOSE_NULL_RE = re.compile(r"(?<![=!<>])(?:==|!=)(?!=)\s*null\b")
+# Literal fragment in the table, so matched literally: `=== null` and `!== null`
+# both contain it and both fire. The one carve-out is the trailing guard, which
+# stops `== nullable` -- a case no reading of the rule wants.
+LOOSE_NULL_RE = re.compile(r"[=!]= null(?!\w)")
 
 SQL_KEYWORD_RE = re.compile(r"\b(SELECT|INSERT|UPDATE|DELETE)\b", re.I)
 
 # Whitespace-only body; the catch binding is optional (JS allows `catch {}`).
-EMPTY_CATCH_RE = re.compile(r"catch\s*(?:\([^)]*\))?\s*\{\s*\}")
+# `catch` must sit where a statement can start -- after `}`, `;`, `{` or a line
+# break -- so the same text inside a string or a comment is not a finding.
+# Group 1 is the `catch` itself, which is the position the finding is reported at.
+EMPTY_CATCH_RE = re.compile(r"(?:^|[\n;{}])\s*(catch\s*(?:\([^)]*\))?\s*\{\s*\})")
 
 INJECTION_PHRASES = (
     "ignore previous instructions",
@@ -42,39 +51,45 @@ INJECTION_PHRASES = (
 )
 
 
-def _split_strings(s: str) -> tuple[list[str], bool]:
-    """Return string-literal contents and whether a `+` occurs outside them."""
-    literals: list[str] = []
-    plus_outside = False
+def _string_spans(s: str) -> list[tuple[int, int]]:
+    """Index pairs bounding each string literal's contents, quotes excluded."""
+    spans: list[tuple[int, int]] = []
     i, n = 0, len(s)
     while i < n:
         c = s[i]
         if c in ("'", '"', "`"):
             quote, i = c, i + 1
-            buf: list[str] = []
+            start = i
             while i < n:
                 if s[i] == "\\" and i + 1 < n:
-                    buf.append(s[i : i + 2])
                     i += 2
                     continue
                 if s[i] == quote:
                     break
-                buf.append(s[i])
                 i += 1
-            literals.append("".join(buf))
+            spans.append((start, i))
             i += 1  # past the closing quote
         else:
-            if c == "+":
-                plus_outside = True
             i += 1
-    return literals, plus_outside
+    return spans
 
 
 def _sql_concat(line: str) -> bool:
-    literals, plus_outside = _split_strings(line)
-    if not plus_outside:
-        return False
-    return any(SQL_KEYWORD_RE.search(lit) for lit in literals)
+    """A SQL-bearing string literal that is an operand of `+`.
+
+    "concatenated with `+`" is a claim about the operator's operands, so the `+`
+    has to touch the literal carrying the keyword. Without that, a line like
+    `"SELECT"; total = a + b` reads as SQL concatenation when it is nothing of
+    the kind.
+    """
+    for start, end in _string_spans(line):
+        if not SQL_KEYWORD_RE.search(line[start:end]):
+            continue
+        before = line[: start - 1].rstrip()  # up to the opening quote
+        after = line[end + 1 :].lstrip()  # past the closing quote
+        if before.endswith("+") or after.startswith("+"):
+            return True
+    return False
 
 
 def _line_rules(text: str) -> list[str]:
@@ -86,10 +101,6 @@ def _line_rules(text: str) -> list[str]:
         hits.append("MOCK-002")
     if _sql_concat(text):
         hits.append("MOCK-003")
-    # Semantic reading of the trigger: it names the loose operators, so
-    # spacing is irrelevant (`x==null` fires), while `===`/`!==` are different
-    # operators and `nullable` is a different identifier (neither fires). The
-    # lookarounds reject a third `=` on either side;  rejects `nullable`.
     if LOOSE_NULL_RE.search(text):
         hits.append("MOCK-005")
     if "JSON.parse(JSON.stringify(" in text:
@@ -121,7 +132,7 @@ def _empty_catch_findings(path: str, hunk: Hunk) -> list[Finding]:
 
     out = []
     for m in EMPTY_CATCH_RE.finditer(text):
-        ln = new_lines[bisect_right(starts, m.start()) - 1]
+        ln = new_lines[bisect_right(starts, m.start(1)) - 1]
         if ln.kind == "+":
             severity, category, title = RULES["MOCK-004"]
             out.append(

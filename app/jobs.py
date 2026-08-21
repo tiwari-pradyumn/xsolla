@@ -19,7 +19,19 @@ from app.findings import Finding, normalize
 from app.providers import ProviderError, get_provider
 
 TERMINAL = ("done", "failed")
-MAX_RETAINED_JOBS = 20000
+
+# A retained job holds its findings *and* its event log, measured at 6.3 KiB
+# empty, 12 KiB typical and 95 KiB for a 100-finding job. The cap is therefore a
+# memory bound first and a retention policy second: 5,000 keeps worst-case job
+# state near 475 MB and typical state near 60 MB, where 20,000 would have
+# reached 1.8 GiB and risked an OOM -- which loses every job, not just the
+# oldest ones. At the declared 30/min this is ~2.8 hours of sustained traffic,
+# far longer than any client polls a jobId.
+#
+# The cache and idempotency indexes are deliberately not swept: they cost ~900
+# bytes per submission, or ~78 MB across a full 48-hour window, and both
+# self-heal when the job they point at is gone.
+MAX_RETAINED_JOBS = 5000
 
 
 @dataclass(frozen=True)
@@ -198,11 +210,18 @@ class JobStore:
             try:
                 for chunk in chunks:
                     collected.extend(await provider.scan(chunk))
+            # Both branches report `internal`, the only published code that fits a
+            # server-side scan failure. The taxonomy has no provider code, and a
+            # failed job is not worth inventing one for: the two causes stay
+            # distinguishable by message, which is what "a clear error" asks for.
             except ProviderError as exc:
+                # Expected and already explained by the provider -- an unreachable
+                # model, a missing credential, a response we refused to trust.
                 self._cache.pop(cache_key, None)
-                job.fail("provider_error", str(exc))
+                job.fail("internal", str(exc))
                 return
             except Exception as exc:  # never let a bad scan take the process down
+                # Unexpected: name the exception type, since this one is a bug.
                 self._cache.pop(cache_key, None)
                 job.fail("internal", f"Scan failed: {type(exc).__name__}: {exc}")
                 return

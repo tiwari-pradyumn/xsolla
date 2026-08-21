@@ -92,31 +92,41 @@ against a local uvicorn instance.
 ## Interpretation calls
 
 The rules table leaves a few things open. Each of these is a decision, not an
-oversight:
+oversight.
 
-- **MOCK-005 matches the loose operators, not the typography.** The trigger
-  names `== null` / `!= null`; we read that as naming the *operators*, so
-  spacing is irrelevant (`x==null` fires) while `=== null` / `!== null` are
-  different operators and `nullable` is a different identifier (none fire).
-  This row was debated hardest: a literal substring reading would flag
-  `=== null` (it contains `== null`) and skip `x==null`. We chose the semantic
-  reading deliberately -- it is the same principle as MOCK-003 below: both
-  triggers name concepts (an operator, a SQL keyword), and formatting or case
-  does not change the concept.
-- **MOCK-003** requires a SQL keyword inside a *string literal* and a `+`
-  outside all literals — that is what distinguishes concatenation from a `+`
-  that merely appears inside SQL text. Keywords match case-insensitively: SQL
-  itself is case-insensitive, so `"select * from t" + id` is the same
-  vulnerability as its uppercase twin. Challenged in review (the table writes
-  the keywords in uppercase, and `"Delete user " + name` is a false positive
-  under this reading) and deliberately kept: missing a real lowercase SQL
-  injection is a worse failure for a security rule than flagging UI text.
+The governing one is **[ADR-0003](docs/adr/0003-trigger-form-decides-the-reading.md):
+each trigger is implemented at the level of formality the table wrote it in.**
+The table is not uniform — five rows give a literal fragment, one gives an
+explicit regex, and two give a prose description — so a single uniform reading
+would mean overriding the task's own wording for whichever rows did not fit it.
+The task's typography decides, which is a defensible authority precisely because
+it is not ours.
+
+- **MOCK-005 is deliberately naive.** The table writes a literal fragment, so it
+  is matched literally: `x === null` and `x !== null` both fire (both contain
+  `== null`), and `x==null` does not (it does not). This is the row that looks
+  most like a bug, and it is the one we debated hardest — the semantic reading,
+  where the trigger names the *operators* and spacing is irrelevant, was
+  implemented first and then reverted under ADR-0003. The single carve-out is a
+  trailing word-boundary guard so `== nullable` stays silent, which no reading of
+  the rule wants.
+- **MOCK-003 is correspondingly not naive**, because prose is not a fragment to
+  match. "Concatenated with `+`" is a claim about the operator's *operands*, so
+  the `+` must touch the string literal carrying the keyword: `"SELECT"; total =
+  a + b` is not a finding. Keywords match case-insensitively: SQL itself is
+  case-insensitive, so `"select * from t" + id` is the same vulnerability as its
+  uppercase twin. Challenged in review (the table writes the keywords in
+  uppercase, and `"Delete user " + name` is a false positive under this reading)
+  and deliberately kept: missing a real lowercase SQL injection is a worse
+  failure for a security rule than flagging UI text.
 - **MOCK-008 is case-sensitive.** `TODO`/`FIXME` are markers; lowercase `todo`
   appears in ordinary identifiers like `todoList`.
 - **MOCK-004** treats a whitespace-only body as empty, detects blocks spanning
   lines by reconstructing the hunk's new-file text (so a block interleaved with
   unchanged lines is still found), and reports only when the `catch` line itself
-  was added.
+  was added. `catch` must also sit where a statement can begin — after `}`, `;`,
+  `{` or a line break — so `"catch {}"` inside a string, `// catch {}` in a
+  comment and `p.catch(e => {})` are not findings.
 - **A cache hit mints a new jobId.** The contract requires the first run to
   report `cacheHit: false` and the repeat to report `true`, so one jobId cannot
   serve both. An `Idempotency-Key` replay takes precedence and returns the
@@ -127,6 +137,42 @@ oversight:
 - **Failed jobs emit a `done` event** before closing, so every stream terminates
   the same way. `total` counts the findings actually emitted (post-truncation).
 - Binary and rename-only file sections are parsed and contribute no findings.
+- **Auth is a gate on the `/v1` prefix, not a check inside the handlers**
+  ([ADR-0004](docs/adr/0004-auth-is-a-prefix-gate.md)). Starlette resolves
+  unknown paths and disallowed methods before any handler runs, so a handler
+  check cannot speak for `PUT /v1/reviews`. It runs as raw ASGI rather than
+  `@app.middleware("http")`, which would wrap SSE in a `BaseHTTPMiddleware`
+  streaming shim. **405 collapses into 404** throughout: the taxonomy has one
+  code for "no such thing" and none for "wrong method", so every status the
+  service emits maps onto a code the task published.
+
+Three clauses in the contract contradict other clauses. Each is resolved in
+favour of the requirement that is separately enumerated under "what we score",
+and the reasoning is in [ADR-0005](docs/adr/0005-conflicting-contract-clauses.md):
+
+- **Findings stream once the ordered list is final, not "as discovered".**
+  Chunks split on file boundaries in *diff* order, which is not lexicographic, so
+  as-discovered emission breaks the ordering guarantee on any diff whose files
+  are not already sorted. Truncation settles it outright: `maxFindings` applies
+  to the *ordered* list, and there is no retraction event for a finding already
+  emitted. Replay is unaffected — the event log guarantees it independently.
+- **Idempotency resolves before the rate limiter.** "Same key + identical body →
+  same `jobId`" is stated without exception, so an exhausted bucket must not turn
+  a replay into a `429`. A replay creates no job and consumes no scan capacity; a
+  cache hit is a real submission with a new jobId and stays behind the limiter.
+- **The diff parser stays lenient** and accepts a hunk whose body does not match
+  its declared counts. The failure modes are asymmetric: leniency costs points
+  only on an unusual probe, while a spurious `422` on a valid diff zeroes every
+  finding in it. Empty, non-diff, headerless and header-only input already `422`.
+
+- **Job retention is a memory bound before it is a policy.** A retained job holds
+  its findings *and* its event log — measured at 6.3 KiB empty, 12 KiB typical,
+  95 KiB for a 100-finding job — so the cap is set at 5,000 (~60 MB typical,
+  ~475 MB worst case). An earlier 20,000 would have reached 1.8 GiB and risked an
+  OOM, which loses every job rather than the oldest ones. The cache and
+  idempotency indexes are deliberately *not* swept: ~900 bytes per submission, or
+  ~78 MB across a full 48-hour window, and both self-heal when the job they point
+  at is gone.
 
 ## AI tools used
 
@@ -136,7 +182,7 @@ questions that came back were about cache-hit jobId semantics, where "declared
 burst" should live given `/spec` has no field for it, and the MOCK-004 ambiguity
 — which surfaced the decisions above *before* any code existed. That interview
 produced `PLAN.md`, `CONTEXT.md` (a glossary that keeps "cache hit" and
-"idempotent replay" from being conflated) and the two ADRs. Implementation was
+"idempotent replay" from being conflated) and the first two ADRs. Implementation was
 then largely AI-written against that plan.
 
 Being straight about the process: it was *not* test-first. The modules were

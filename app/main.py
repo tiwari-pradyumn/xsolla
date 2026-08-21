@@ -42,8 +42,11 @@ async def _api_error_handler(_: Request, exc: ApiError) -> JSONResponse:
 
 @app.exception_handler(StarletteHTTPException)
 async def _http_error_handler(_: Request, exc: StarletteHTTPException) -> JSONResponse:
+    # 405 collapses into 404: the published taxonomy has one code for "no such
+    # thing" and none for "wrong method", so emitting a 405 would mean a status
+    # with no code to carry it.
     if exc.status_code in (404, 405):
-        return errors.ApiError(exc.status_code, "not_found", "No such route.").response()
+        return errors.ApiError(404, "not_found", "No such route.").response()
     if exc.status_code == 401:
         return errors.unauthorized().response()
     return errors.ApiError(exc.status_code, "internal", str(exc.detail)).response()
@@ -59,12 +62,46 @@ async def _unhandled_error_handler(_: Request, exc: Exception) -> JSONResponse:
     return errors.internal().response()
 
 
-def require_auth(request: Request) -> None:
-    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+def _bearer_ok(header: str) -> bool:
+    scheme, _, token = header.partition(" ")
     if scheme.lower() != "bearer" or not token.strip():
-        raise errors.unauthorized()
-    if not hmac.compare_digest(token.strip(), AUTH_TOKEN):
-        raise errors.unauthorized()
+        return False
+    return hmac.compare_digest(token.strip(), AUTH_TOKEN)
+
+
+class V1AuthGate:
+    """Authenticate every `/v1/*` request before routing.
+
+    The contract puts auth on the route *prefix*, not on the handlers: an
+    unknown path and a wrong method under `/v1` are both unauthorized before
+    they are anything else. Checking inside handlers cannot express that,
+    because Starlette resolves 404s and 405s before a handler ever runs.
+
+    Written as raw ASGI rather than `@app.middleware("http")` on purpose.
+    That decorator builds a `BaseHTTPMiddleware`, which re-wraps every response
+    in its own streaming shim; SSE is a scored path and there is no reason to
+    put a shim in it. This passes authorized traffic through untouched.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "http":
+            path = scope["path"]
+            if path == "/v1" or path.startswith("/v1/"):
+                header = ""
+                for key, value in scope["headers"]:
+                    if key == b"authorization":
+                        header = value.decode("latin-1")
+                        break
+                if not _bearer_ok(header):
+                    await errors.unauthorized().response()(scope, receive, send)
+                    return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(V1AuthGate)
 
 
 async def read_body_capped(request: Request) -> bytes:
@@ -179,8 +216,22 @@ def _read_options(payload: dict) -> tuple[str, int]:
 
 @app.post("/v1/reviews")
 async def create_review(request: Request) -> JSONResponse:
-    require_auth(request)
     body = await read_body_capped(request)
+
+    # Idempotency is resolved before the rate limiter, and needs nothing but the
+    # body hash to do it. A replay creates no job and consumes no scan capacity,
+    # so charging it a token would let an exhausted bucket break the contract's
+    # "same key + identical body -> same jobId" invariant. A cache hit is a real
+    # submission with a new jobId, so it stays behind the limiter.
+    body_hash = hashlib.sha256(body).hexdigest()
+    idem_key = request.headers.get("idempotency-key")
+    if idem_key:
+        try:
+            existing = store.idempotent_replay(idem_key, body_hash)
+        except IdempotencyConflict:
+            raise errors.idempotency_conflict()
+        if existing is not None:
+            return JSONResponse({"jobId": existing.id, "status": "queued"}, status_code=202)
 
     retry_after = bucket.take()
     if retry_after is not None:
@@ -204,16 +255,6 @@ async def create_review(request: Request) -> JSONResponse:
     except InvalidDiff as exc:
         raise errors.invalid_diff(f"Field 'diff' is not a parseable unified diff: {exc}")
 
-    body_hash = hashlib.sha256(body).hexdigest()
-    idem_key = request.headers.get("idempotency-key")
-    if idem_key:
-        try:
-            existing = store.idempotent_replay(idem_key, body_hash)
-        except IdempotencyConflict:
-            raise errors.idempotency_conflict()
-        if existing is not None:
-            return JSONResponse({"jobId": existing.id, "status": "queued"}, status_code=202)
-
     cache_key = hashlib.sha256(
         b"\x00".join([diff.encode("utf-8"), provider.encode(), str(max_findings).encode()])
     ).hexdigest()
@@ -230,8 +271,7 @@ async def create_review(request: Request) -> JSONResponse:
 
 
 @app.get("/v1/reviews/{job_id}")
-async def get_review(job_id: str, request: Request) -> JSONResponse:
-    require_auth(request)
+async def get_review(job_id: str) -> JSONResponse:
     job = store.get(job_id)
     if job is None:
         raise errors.not_found(f"No job with id {job_id!r}.")
@@ -239,8 +279,7 @@ async def get_review(job_id: str, request: Request) -> JSONResponse:
 
 
 @app.get("/v1/reviews/{job_id}/stream")
-async def stream_review(job_id: str, request: Request) -> StreamingResponse:
-    require_auth(request)
+async def stream_review(job_id: str) -> StreamingResponse:
     job = store.get(job_id)
     if job is None:
         raise errors.not_found(f"No job with id {job_id!r}.")

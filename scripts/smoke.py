@@ -117,10 +117,21 @@ async def main(base_url: str, token: str) -> int:
             ("POST", "/v1/reviews"),
             ("GET", "/v1/reviews/x"),
             ("GET", "/v1/reviews/x/stream"),
+            # The gate is on the prefix, so an unknown path and a disallowed
+            # method are unauthorized before they are anything else.
+            ("GET", "/v1/unknown"),
+            ("PUT", "/v1/reviews"),
+            ("DELETE", "/v1/reviews/x"),
         ):
             resp = await pub.request(method, path, json={"diff": SAMPLE})
             auth_ok &= resp.status_code == 401 and resp.json()["error"]["code"] == "unauthorized"
         check("401 + envelope on all /v1 routes without a token", auth_ok)
+
+        route_ok = True
+        for method, path in (("PUT", "/v1/reviews"), ("GET", "/v1/unknown")):
+            resp = await client.request(method, path)
+            route_ok &= resp.status_code == 404 and resp.json()["error"]["code"] == "not_found"
+        check("authenticated bad route -> 404 not_found (never 405)", route_ok)
 
         resp = await pub.request(
             "POST", "/v1/reviews", json={"diff": SAMPLE}, headers={"Authorization": "Bearer nope"}

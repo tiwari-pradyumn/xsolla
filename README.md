@@ -87,7 +87,12 @@ to 100 and truncates the ordered list.
 - **Idempotency**: `Idempotency-Key` with a byte-identical body returns the
   *same* jobId; a different body under the same key is `409`.
 - **Rate limiting** applies to `POST /v1/reviews` only, as a 30-token bucket
-  refilling at 30/minute. GETs are never limited.
+  refilling at 30/minute. GETs are never limited, and an idempotent replay is
+  resolved before the limiter so an empty bucket cannot break the "same key →
+  same jobId" guarantee.
+- **Auth** is gated on the whole `/v1` prefix ahead of routing, so an unknown
+  path or a disallowed method under `/v1` is `401` before it is anything else.
+  405 collapses into 404 so every status maps onto a published error code.
 - **Concurrency**: four jobs process at once; further jobs stay `queued`.
 
 ## Tests

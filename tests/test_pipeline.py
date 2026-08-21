@@ -328,6 +328,38 @@ async def test_idempotent_replay_beats_caching(client):
     assert (await wait_done(client, job_id))["usage"]["cacheHit"] is False
 
 
+async def test_idempotent_replay_survives_an_exhausted_bucket(client):
+    """"Same key + identical body -> same jobId" is stated without exception, so
+    an empty bucket must not turn a replay into a 429. The replay creates no job
+    and consumes no scan capacity; only a genuinely new submission is charged."""
+    headers = {**AUTH, "Idempotency-Key": "key-4"}
+    body = {"diff": SIMPLE}
+    first = await client.post("/v1/reviews", json=body, headers=headers)
+    assert first.status_code == 202
+
+    from app.main import bucket
+
+    bucket.tokens = 0
+
+    replay = await client.post("/v1/reviews", json=body, headers=headers)
+    assert replay.status_code == 202
+    assert replay.json()["jobId"] == first.json()["jobId"]
+
+    # A new submission under the same empty bucket is still refused.
+    fresh = await client.post(
+        "/v1/reviews", json={"diff": file_section("src/z.ts", ["eval(2);"])}, headers=AUTH
+    )
+    assert fresh.status_code == 429
+    assert fresh.headers["Retry-After"]
+
+    # So is a conflicting key: the conflict is a fact about the request, and is
+    # resolved before the limiter sees it.
+    conflict = await client.post(
+        "/v1/reviews", json={"diff": file_section("src/y.ts", ["eval(3);"])}, headers=headers
+    )
+    assert conflict.status_code == 409
+
+
 # --- concurrency and rate limiting --------------------------------------
 
 

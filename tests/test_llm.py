@@ -182,7 +182,7 @@ async def test_missing_credentials_fail_the_job_not_the_service(client, monkeypa
 
     body = await wait_done(client, await submit(client, DIFF, provider="llm"))
     assert body["status"] == "failed"
-    assert body["error"]["code"] == "provider_error"
+    assert body["error"]["code"] == "internal"
     assert "GEMINI_API_KEY" in body["error"]["message"]
 
     assert (await client.get("/health")).status_code == 200
@@ -195,7 +195,7 @@ async def test_unreachable_model_fails_the_job(client, monkeypatch):
 
     body = await wait_done(client, await submit(client, DIFF, provider="llm"))
     assert body["status"] == "failed"
-    assert body["error"]["code"] == "provider_error"
+    assert body["error"]["code"] == "internal"
     assert "Could not reach the model" in body["error"]["message"]
 
 
