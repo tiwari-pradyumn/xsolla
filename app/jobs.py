@@ -9,7 +9,6 @@ events to one that watched it live.
 
 import asyncio
 import uuid
-from collections import OrderedDict
 from dataclasses import dataclass
 
 from app.chunking import chunk_files
@@ -17,21 +16,6 @@ from app.config import MAX_CONCURRENT_JOBS
 from app.diff import FileDiff, ParsedDiff
 from app.findings import Finding, normalize
 from app.providers import ProviderError, get_provider
-
-TERMINAL = ("done", "failed")
-
-# A retained job holds its findings *and* its event log, measured at 6.3 KiB
-# empty, 12 KiB typical and 95 KiB for a 100-finding job. The cap is therefore a
-# memory bound first and a retention policy second: 5,000 keeps worst-case job
-# state near 475 MB and typical state near 60 MB, where 20,000 would have
-# reached 1.8 GiB and risked an OOM -- which loses every job, not just the
-# oldest ones. At the declared 30/min this is ~2.8 hours of sustained traffic,
-# far longer than any client polls a jobId.
-#
-# The cache and idempotency indexes are deliberately not swept: they cost ~900
-# bytes per submission, or ~78 MB across a full 48-hour window, and both
-# self-heal when the job they point at is gone.
-MAX_RETAINED_JOBS = 5000
 
 
 @dataclass(frozen=True)
@@ -93,10 +77,14 @@ class Job:
         self.status = "running"
         self._emit_status()
 
-    def finish(self, findings: list[Finding]) -> None:
-        self.findings = findings
+    def add_findings(self, findings: list[Finding]) -> None:
         for f in findings:
+            self.findings.append(f)
             self._emit("finding", f.to_dict())
+
+    def finish(self, findings: list[Finding] | None = None) -> None:
+        if findings is not None:
+            self.add_findings(findings)
         self.status = "done"
         self._emit_status()
         self._close()
@@ -119,7 +107,10 @@ class Job:
 
 class JobStore:
     def __init__(self, max_concurrent: int = MAX_CONCURRENT_JOBS):
-        self.jobs: OrderedDict[str, Job] = OrderedDict()
+        # The contract gives job IDs, idempotency keys and replay logs no expiry.
+        # Keep them for this in-memory process's lifetime; introducing eviction
+        # would silently break GET, SSE replay, caching and idempotency together.
+        self.jobs: dict[str, Job] = {}
         self._cache: dict[str, str] = {}  # cache key -> job id
         self._idempotency: dict[str, tuple[str, str]] = {}  # key -> (body hash, job id)
         self._semaphore = asyncio.Semaphore(max_concurrent)
@@ -153,7 +144,14 @@ class JobStore:
         idem_key: str | None,
         body_hash: str | None,
     ) -> Job:
-        chunks = chunk_files(parsed.files)
+        ordered_files = sorted(
+            parsed.files,
+            key=lambda file: (
+                file.path,
+                min((hunk.new_start for hunk in file.hunks), default=0),
+            ),
+        )
+        chunks = chunk_files(ordered_files)
 
         source_id = self._cache.get(cache_key)
         source = self.jobs.get(source_id) if source_id else None
@@ -180,13 +178,6 @@ class JobStore:
 
     def _register(self, job: Job) -> None:
         self.jobs[job.id] = job
-        while len(self.jobs) > MAX_RETAINED_JOBS:
-            for job_id, candidate in self.jobs.items():
-                if candidate.status in TERMINAL:
-                    del self.jobs[job_id]
-                    break
-            else:
-                break
 
     def _spawn(self, coro) -> None:
         task = asyncio.create_task(coro)
@@ -206,10 +197,29 @@ class JobStore:
         async with self._semaphore:
             job.start()
             provider = get_provider(provider_name)
-            collected: list[Finding] = []
+            pending: dict[str, list[Finding]] = {}
+            seen: set[str] = set()
             try:
-                for chunk in chunks:
-                    collected.extend(await provider.scan(chunk))
+                for index, chunk in enumerate(chunks):
+                    for finding in await provider.scan(chunk):
+                        pending.setdefault(finding.path, []).append(finding)
+
+                    # Files are scanned in path order. If the next chunk starts
+                    # at a later path, no future finding can sort before these,
+                    # so they can be emitted now without breaking stream order.
+                    next_path = chunks[index + 1][0].path if index + 1 < len(chunks) else None
+                    ready_paths = sorted(
+                        path for path in pending if next_path is None or path < next_path
+                    )
+                    for path in ready_paths:
+                        ready = []
+                        for finding in normalize(pending.pop(path)):
+                            if finding.id in seen:
+                                continue
+                            seen.add(finding.id)
+                            if len(job.findings) + len(ready) < max_findings:
+                                ready.append(finding)
+                        job.add_findings(ready)
             # Both branches report `internal`, the only published code that fits a
             # server-side scan failure. The taxonomy has no provider code, and a
             # failed job is not worth inventing one for: the two causes stay
@@ -225,15 +235,19 @@ class JobStore:
                 self._cache.pop(cache_key, None)
                 job.fail("internal", f"Scan failed: {type(exc).__name__}: {exc}")
                 return
-            job.finish(normalize(collected)[:max_findings])
+            job.finish()
 
     async def _run_cached(self, job: Job, source: Job) -> None:
         # No semaphore: this job performs no work, it only waits for the scan it
         # is reusing. Taking a slot here could deadlock against that very scan.
         job.start()
-        await source.finished.wait()
+        forwarded = 0
+        async for event in source.iter_events():
+            if event.name == "finding":
+                job.add_findings([source.findings[forwarded]])
+                forwarded += 1
         if source.status == "done":
-            job.finish(list(source.findings))
+            job.finish()
         else:
             err = source.error or {"code": "internal", "message": "Source job failed."}
             job.fail(err["code"], err["message"])

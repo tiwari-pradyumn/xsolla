@@ -60,10 +60,10 @@ model outage still succeeds (covered by a test).
 
 ## How the cross-cutting behaviours were verified
 
-122 tests (`pytest`, no network) plus `scripts/smoke.py`, which re-runs the same
+158 tests (`pytest`, no network) plus `scripts/smoke.py`, which re-runs the same
 checks against a *running* service over real HTTP — SSE in particular behaves
 differently through an in-process transport than through uvicorn, so the
-in-process suite alone would not have been evidence. All 33 smoke checks pass
+in-process suite alone would not have been evidence. All 34 smoke checks pass
 against a local uvicorn instance.
 
 - **Chunking** — a generated 40-file diff is scanned whole and per-chunk, and
@@ -107,13 +107,13 @@ it is not ours.
   `== null`), and `x==null` does not (it does not). This is the row that looks
   most like a bug, and it is the one we debated hardest — the semantic reading,
   where the trigger names the *operators* and spacing is irrelevant, was
-  implemented first and then reverted under ADR-0003. The single carve-out is a
-  trailing word-boundary guard so `== nullable` stays silent, which no reading of
-  the rule wants.
+  implemented first and then reverted under ADR-0003. There are no semantic
+  carve-outs: exact substring matching is what the scored trigger requests.
 - **MOCK-003 is correspondingly not naive**, because prose is not a fragment to
   match. "Concatenated with `+`" is a claim about the operator's *operands*, so
-  the `+` must touch the string literal carrying the keyword: `"SELECT"; total =
-  a + b` is not a finding. Keywords match case-insensitively: SQL itself is
+  grouping parentheses and comments between the literal and `+` are allowed,
+  while `"SELECT"; total = a + b` is not a finding. Keywords match
+  case-insensitively: SQL itself is
   case-insensitive, so `"select * from t" + id` is the same vulnerability as its
   uppercase twin. Challenged in review (the table writes the keywords in
   uppercase, and `"Delete user " + name` is a false positive under this reading)
@@ -124,9 +124,8 @@ it is not ours.
 - **MOCK-004** treats a whitespace-only body as empty, detects blocks spanning
   lines by reconstructing the hunk's new-file text (so a block interleaved with
   unchanged lines is still found), and reports only when the `catch` line itself
-  was added. `catch` must also sit where a statement can begin — after `}`, `;`,
-  `{` or a line break — so `"catch {}"` inside a string, `// catch {}` in a
-  comment and `p.catch(e => {})` are not findings.
+  was added. Strings and comments are masked before matching syntax, so catch
+  text inside data is ignored while a comment-only body remains empty.
 - **A cache hit mints a new jobId.** The contract requires the first run to
   report `cacheHit: false` and the repeat to report `true`, so one jobId cannot
   serve both. An `Idempotency-Key` replay takes precedence and returns the
@@ -146,33 +145,25 @@ it is not ours.
   code for "no such thing" and none for "wrong method", so every status the
   service emits maps onto a code the task published.
 
-Three clauses in the contract contradict other clauses. Each is resolved in
-favour of the requirement that is separately enumerated under "what we score",
-and the reasoning is in [ADR-0005](docs/adr/0005-conflicting-contract-clauses.md):
+Three clauses pull in different directions but are satisfied together; the
+mechanics are in [ADR-0005](docs/adr/0005-conflicting-contract-clauses.md):
 
-- **Findings stream once the ordered list is final, not "as discovered".**
-  Chunks split on file boundaries in *diff* order, which is not lexicographic, so
-  as-discovered emission breaks the ordering guarantee on any diff whose files
-  are not already sorted. Truncation settles it outright: `maxFindings` applies
-  to the *ordered* list, and there is no retraction event for a finding already
-  emitted. Replay is unaffected — the event log guarantees it independently.
+- **Findings stream as soon as their ordered position is final.** Files are
+  scanned in path order and findings are retained only while the same path may
+  occur in a later chunk. This preserves global ordering, deduplication and
+  `maxFindings` while emitting before later paths finish.
 - **Idempotency resolves before the rate limiter.** "Same key + identical body →
   same `jobId`" is stated without exception, so an exhausted bucket must not turn
   a replay into a `429`. A replay creates no job and consumes no scan capacity; a
   cache hit is a real submission with a new jobId and stays behind the limiter.
-- **The diff parser stays lenient** and accepts a hunk whose body does not match
-  its declared counts. The failure modes are asymmetric: leniency costs points
-  only on an unusual probe, while a spurious `422` on a valid diff zeroes every
-  finding in it. Empty, non-diff, headerless and header-only input already `422`.
+- **The diff parser validates declared hunk counts** while remaining lenient
+  about extended Git headers, bare `diff -u`, binary sections and no-newline
+  markers.
 
-- **Job retention is a memory bound before it is a policy.** A retained job holds
-  its findings *and* its event log — measured at 6.3 KiB empty, 12 KiB typical,
-  95 KiB for a 100-finding job — so the cap is set at 5,000 (~60 MB typical,
-  ~475 MB worst case). An earlier 20,000 would have reached 1.8 GiB and risked an
-  OOM, which loses every job rather than the oldest ones. The cache and
-  idempotency indexes are deliberately *not* swept: ~900 bytes per submission, or
-  ~78 MB across a full 48-hour window, and both self-heal when the job they point
-  at is gone.
+- **Jobs are retained for the process lifetime.** The contract gives job IDs,
+  idempotency keys and SSE replay logs no expiry; evicting any one of them would
+  break all three guarantees. Persistence and TTLs require an explicit API
+  contract and remain production follow-up work.
 
 ## AI tools used
 
@@ -215,7 +206,7 @@ host must never scale to zero — a cold start both loses jobs and threatens the
 new accounts. Railway does not sleep, needs no card, and its 30-day trial credit
 outlasts the scoring window comfortably.
 
-All 33 smoke checks pass against the deployed URL, including a live `llm` job.
+All 34 smoke checks pass against the deployed URL, including a live `llm` job.
 
 **The `llm` path is verified end to end** against a live Gemini key: a real
 review returns correctly anchored findings in ~1.6s, and `scripts/smoke.py`

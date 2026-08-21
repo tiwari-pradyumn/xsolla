@@ -221,6 +221,54 @@ async def test_stream_of_a_slow_job_is_followed_live(client, monkeypatch):
     assert names[-1] == "done"
 
 
+async def test_findings_stream_in_order_before_later_chunks_finish(client, monkeypatch):
+    import app.jobs as jobs_module
+    from app.main import store
+
+    first_scanned = asyncio.Event()
+    release_second = asyncio.Event()
+
+    class Staged:
+        name = "mock"
+        calls = 0
+
+        async def scan(self, files):
+            self.calls += 1
+            if self.calls == 1:
+                first_scanned.set()
+            else:
+                await release_second.wait()
+            return scan_files(files)
+
+    staged = Staged()
+    monkeypatch.setattr(jobs_module, "get_provider", lambda name: staged)
+
+    huge_a = file_section(
+        "src/a.ts", ["eval(a);", f"const padding = '{'x' * CHUNK_BYTES}';"]
+    )
+    diff = file_section("src/z.ts", ["eval(z);"]) + huge_a
+    job_id = await submit(client, diff)
+    cached_id = await submit(client, diff)
+    job = store.get(job_id)
+    cached = store.get(cached_id)
+
+    try:
+        await asyncio.wait_for(first_scanned.wait(), timeout=1)
+        await asyncio.sleep(0)
+        for candidate in (job, cached):
+            discovered = [event.data for event in candidate.events if event.name == "finding"]
+            assert [finding["path"] for finding in discovered] == ["src/a.ts"]
+        assert job.status == "running"
+        assert cached.status == "running"
+    finally:
+        release_second.set()
+
+    body = await wait_done(client, job_id)
+    cached_body = await wait_done(client, cached_id)
+    assert [finding["path"] for finding in body["findings"]] == ["src/a.ts", "src/z.ts"]
+    assert cached_body["findings"] == body["findings"]
+
+
 # --- caching and idempotency --------------------------------------------
 
 
@@ -358,6 +406,25 @@ async def test_idempotent_replay_survives_an_exhausted_bucket(client):
         "/v1/reviews", json={"diff": file_section("src/y.ts", ["eval(3);"])}, headers=headers
     )
     assert conflict.status_code == 409
+
+
+def test_jobs_and_idempotency_are_retained_for_the_service_lifetime():
+    from app.jobs import Job, JobStore
+
+    store = JobStore()
+    original = Job("original", input_bytes=1, chunks=1, cache_hit=False)
+    original.finish([])
+    store._register(original)
+    store._idempotency["stable-key"] = ("body-hash", original.id)
+
+    # Regresses the former 5,000-job cap without starting worker tasks.
+    for index in range(5000):
+        job = Job(f"later-{index}", input_bytes=1, chunks=1, cache_hit=False)
+        job.finish([])
+        store._register(job)
+
+    assert store.get(original.id) is original
+    assert store.idempotent_replay("stable-key", "body-hash") is original
 
 
 # --- concurrency and rate limiting --------------------------------------

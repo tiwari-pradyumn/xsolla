@@ -1,9 +1,8 @@
 """Unified-diff parser.
 
-Deliberately lenient: git extended headers, bare `diff -u` output, binary
-sections and `\\ No newline at end of file` markers are all tolerated. A diff is
-rejected (422) only when it yields no file section carrying either a hunk or a
-binary marker.
+Git extended headers, bare `diff -u` output, binary sections and
+`\\ No newline at end of file` markers are tolerated. Hunk line counts are
+validated because an under- or over-filled hunk is not a parseable unified diff.
 
 Each parsed file carries the exact byte span of the original diff it came from,
 so chunking can split on file boundaries without re-serialising anything.
@@ -112,21 +111,36 @@ def parse_diff(text: str) -> ParsedDiff:
             marker = line[:1]
             if marker == "\\":  # "\ No newline at end of file"
                 continue
-            if marker in (" ", "+", "-") or line == "":
-                kind = marker if marker in ("+", "-") else " "
-                content = line[1:] if marker in (" ", "+", "-") else ""
+            if marker in (" ", "+", "-"):
+                kind = marker
+                content = line[1:]
                 if kind == "-":
+                    if old_rem == 0:
+                        raise InvalidDiff("Malformed hunk: too many removed lines.")
                     hunk.lines.append(Line("-", content, None))
                     old_rem -= 1
-                else:
+                elif kind == "+":
+                    if new_rem == 0:
+                        raise InvalidDiff("Malformed hunk: too many added lines.")
                     hunk.lines.append(Line(kind, content, new_lineno))
                     new_lineno += 1
                     new_rem -= 1
-                    if kind == " ":
-                        old_rem -= 1
+                else:
+                    if old_rem == 0 or new_rem == 0:
+                        raise InvalidDiff("Malformed hunk: too many context lines.")
+                    hunk.lines.append(Line(kind, content, new_lineno))
+                    new_lineno += 1
+                    old_rem -= 1
+                    new_rem -= 1
                 continue
-            # Anything else terminates the hunk early (counts were wrong).
-            hunk, old_rem, new_rem = None, 0, 0
+            raise InvalidDiff("Malformed hunk: body ended before its declared line counts.")
+
+        if hunk is not None and old_rem == 0 and new_rem == 0:
+            extra_body_line = line.startswith(" ") or (
+                line.startswith("+") and not line.startswith("+++ ")
+            ) or (line.startswith("-") and not line.startswith("--- "))
+            if extra_body_line:
+                raise InvalidDiff("Malformed hunk: body exceeds its declared line counts.")
 
         if line.startswith("diff --git "):
             b = start_file(i)
@@ -168,6 +182,9 @@ def parse_diff(text: str) -> ParsedDiff:
                 start_file(i)
             cur.binary = True
             continue
+
+    if hunk is not None and (old_rem > 0 or new_rem > 0):
+        raise InvalidDiff("Malformed hunk: body ended before its declared line counts.")
 
     if not builders:
         raise InvalidDiff("No file sections found.")

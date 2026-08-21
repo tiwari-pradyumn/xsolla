@@ -31,16 +31,11 @@ CREDENTIAL_RE = re.compile(
     r"""(api[_-]?key|secret|token)\s*[:=]\s*['"][A-Za-z0-9_\-]{16,}['"]""", re.I
 )
 
-# Literal fragment in the table, so matched literally: `=== null` and `!== null`
-# both contain it and both fire. The one carve-out is the trailing guard, which
-# stops `== nullable` -- a case no reading of the rule wants.
-LOOSE_NULL_RE = re.compile(r"[=!]= null(?!\w)")
-
 SQL_KEYWORD_RE = re.compile(r"\b(SELECT|INSERT|UPDATE|DELETE)\b", re.I)
 
-# Whitespace-only body; the catch binding is optional (JS allows `catch {}`).
-# `catch` must sit where a statement can start -- after `}`, `;`, `{` or a line
-# break -- so the same text inside a string or a comment is not a finding.
+# After strings and comments are masked, a whitespace-only body is empty. The
+# catch binding is optional (JS allows `catch {}`), and `catch` must sit where a
+# statement can start so a method named `catch` is not mistaken for a block.
 # Group 1 is the `catch` itself, which is the position the finding is reported at.
 EMPTY_CATCH_RE = re.compile(r"(?:^|[\n;{}])\s*(catch\s*(?:\([^)]*\))?\s*\{\s*\})")
 
@@ -51,27 +46,108 @@ INJECTION_PHRASES = (
 )
 
 
-def _string_spans(s: str) -> list[tuple[int, int]]:
-    """Index pairs bounding each string literal's contents, quotes excluded."""
-    spans: list[tuple[int, int]] = []
-    i, n = 0, len(s)
+def _scan_source(text: str) -> tuple[list[tuple[int, int, int, int]], str, str]:
+    """Return string spans plus same-length syntax and comment masks.
+
+    The syntax mask replaces strings with `x` and comments with spaces, keeping
+    newlines and offsets intact. The comment mask removes only comments, which
+    lets the SQL rule inspect operators around a real string literal.
+    """
+    spans: list[tuple[int, int, int, int]] = []
+    syntax = list(text)
+    comments = list(text)
+    i, n = 0, len(text)
+
+    def mask(target: list[str], start: int, end: int, replacement: str) -> None:
+        for pos in range(start, end):
+            if target[pos] not in ("\r", "\n"):
+                target[pos] = replacement
+
     while i < n:
-        c = s[i]
+        c = text[i]
         if c in ("'", '"', "`"):
-            quote, i = c, i + 1
-            start = i
+            quote = c
+            opening = i
+            i += 1
+            content_start = i
             while i < n:
-                if s[i] == "\\" and i + 1 < n:
+                if text[i] == "\\" and i + 1 < n:
                     i += 2
                     continue
-                if s[i] == quote:
+                if text[i] == quote:
                     break
                 i += 1
-            spans.append((start, i))
-            i += 1  # past the closing quote
-        else:
+            if i == n:  # unterminated data cannot be an operand
+                mask(syntax, opening, n, "x")
+                break
+            spans.append((opening, content_start, i, i))
+            mask(syntax, opening, i + 1, "x")
             i += 1
-    return spans
+            continue
+
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            start = i
+            i += 2
+            while i < n and text[i] not in ("\r", "\n"):
+                i += 1
+            mask(syntax, start, i, " ")
+            mask(comments, start, i, " ")
+            continue
+
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            start = i
+            i += 2
+            while i + 1 < n and text[i : i + 2] != "*/":
+                i += 1
+            i = min(n, i + 2)
+            mask(syntax, start, i, " ")
+            mask(comments, start, i, " ")
+            continue
+
+        i += 1
+
+    return spans, "".join(syntax), "".join(comments)
+
+
+def _previous_nonspace(text: str, index: int) -> int | None:
+    index -= 1
+    while index >= 0 and text[index].isspace():
+        index -= 1
+    return index if index >= 0 else None
+
+
+def _next_nonspace(text: str, index: int) -> int | None:
+    while index < len(text) and text[index].isspace():
+        index += 1
+    return index if index < len(text) else None
+
+
+def _is_call_parenthesis(text: str, opening: int) -> bool:
+    previous = _previous_nonspace(text, opening)
+    if previous is None:
+        return False
+    char = text[previous]
+    return char.isalnum() or char in "_$)]"
+
+
+def _literal_is_concatenated(text: str, opening: int, closing: int) -> bool:
+    left, right = opening, closing
+    while True:
+        before = _previous_nonspace(text, left)
+        after = _next_nonspace(text, right + 1)
+        if (before is not None and text[before] == "+") or (
+            after is not None and text[after] == "+"
+        ):
+            return True
+        if (
+            before is None
+            or after is None
+            or text[before] != "("
+            or text[after] != ")"
+            or _is_call_parenthesis(text, before)
+        ):
+            return False
+        left, right = before, after
 
 
 def _sql_concat(line: str) -> bool:
@@ -82,12 +158,11 @@ def _sql_concat(line: str) -> bool:
     `"SELECT"; total = a + b` reads as SQL concatenation when it is nothing of
     the kind.
     """
-    for start, end in _string_spans(line):
+    literals, _, comments_masked = _scan_source(line)
+    for opening, start, end, closing in literals:
         if not SQL_KEYWORD_RE.search(line[start:end]):
             continue
-        before = line[: start - 1].rstrip()  # up to the opening quote
-        after = line[end + 1 :].lstrip()  # past the closing quote
-        if before.endswith("+") or after.startswith("+"):
+        if _literal_is_concatenated(comments_masked, opening, closing):
             return True
     return False
 
@@ -101,7 +176,7 @@ def _line_rules(text: str) -> list[str]:
         hits.append("MOCK-002")
     if _sql_concat(text):
         hits.append("MOCK-003")
-    if LOOSE_NULL_RE.search(text):
+    if "== null" in text or "!= null" in text:
         hits.append("MOCK-005")
     if "JSON.parse(JSON.stringify(" in text:
         hits.append("MOCK-006")
@@ -129,9 +204,10 @@ def _empty_catch_findings(path: str, hunk: Hunk) -> list[Finding]:
         starts.append(pos)
         pos += len(ln.text) + 1
     text = "\n".join(ln.text for ln in new_lines)
+    _, syntax, _ = _scan_source(text)
 
     out = []
-    for m in EMPTY_CATCH_RE.finditer(text):
+    for m in EMPTY_CATCH_RE.finditer(syntax):
         ln = new_lines[bisect_right(starts, m.start(1)) - 1]
         if ln.kind == "+":
             severity, category, title = RULES["MOCK-004"]

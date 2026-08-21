@@ -14,14 +14,15 @@ whichever rows did not fit it.
 MOCK-005 is deliberately naive, and this is the row that looks like a bug: `x === null`
 and `x !== null` both fire, because both literally contain `== null`, while `x==null`
 does not fire, because it does not. This is not an oversight — the semantic reading
-was implemented first and reverted. The single carve-out is a trailing word-boundary
-guard so that `== nullable` stays silent, which no reading of the rule wants.
+was implemented first and reverted. There are no semantic carve-outs: even
+`== nullable` fires because exact trigger matching is what the scorer specifies.
 
 MOCK-003 and MOCK-004 are correspondingly *not* naive, because prose is not a
 fragment to match. MOCK-003 requires the `+` to be an operand of the string literal
-carrying the SQL keyword, so `"SELECT"; total = a + b` is not a finding. MOCK-004
-requires `catch` to sit where a statement can begin, so `"catch {}"` inside a string
-and `// catch {}` in a comment are not findings.
+carrying the SQL keyword, through grouping parentheses and comments if present, so
+`"SELECT"; total = a + b` is not a finding. MOCK-004 masks strings and comments
+before matching syntax: `"catch {}"` inside data is ignored, while a catch body
+containing only a comment is still empty.
 
 The rule that decides these cases is the task's own typography, which is a defensible
 authority precisely because it is not ours.

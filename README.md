@@ -77,7 +77,8 @@ to 100 and truncates the ordered list.
 ## Behaviour worth knowing
 
 - **Ordering** is always `path`, then `line`, then `ruleId`, deduplicated by
-  `id` — in responses and in streams alike.
+  `id` — in responses and in streams alike. Files scan in path order, so each
+  path's findings stream as soon as their ordered position is final.
 - **Chunking**: diffs over 64 KiB split on file boundaries only. A chunked scan
   returns exactly what an unchunked scan would; `usage.chunks` reports the count.
 - **Caching**: a byte-identical `{diff, provider, maxFindings}` returns a *new*
@@ -86,6 +87,8 @@ to 100 and truncates the ordered list.
   rescanning.
 - **Idempotency**: `Idempotency-Key` with a byte-identical body returns the
   *same* jobId; a different body under the same key is `409`.
+- **Retention**: jobs, cache entries, idempotency keys and SSE logs live for the
+  process lifetime; the API declares no expiry.
 - **Rate limiting** applies to `POST /v1/reviews` only, as a 30-token bucket
   refilling at 30/minute. GETs are never limited, and an idempotent replay is
   resolved before the limiter so an empty bucket cannot break the "same key →
@@ -98,7 +101,7 @@ to 100 and truncates the ordered list.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest              # 133 tests, no network needed
+.venv/bin/python -m pytest              # 158 tests, no network needed
 .venv/bin/python scripts/smoke.py http://localhost:8000 my-token
 ```
 
