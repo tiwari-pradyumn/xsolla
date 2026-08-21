@@ -117,3 +117,43 @@ async def test_submit_returns_queued_envelope(client):
     body = resp.json()
     assert body["status"] == "queued"
     assert isinstance(body["jobId"], str) and body["jobId"]
+
+
+# --- startup safety -----------------------------------------------------
+
+
+def test_unset_auth_token_refuses_to_start(monkeypatch):
+    """A missing AUTH_TOKEN must crash the process, not silently serve an open
+    API on a default that is published in this repo."""
+    import importlib
+
+    import app.config
+
+    monkeypatch.delenv("AUTH_TOKEN", raising=False)
+    # .env would otherwise repopulate the variable we just removed.
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)
+
+    try:
+        with pytest.raises(RuntimeError, match="AUTH_TOKEN"):
+            importlib.reload(app.config)
+    finally:
+        monkeypatch.setenv("AUTH_TOKEN", "test-token")
+        monkeypatch.undo()
+        importlib.reload(app.config)
+
+
+def test_blank_auth_token_is_treated_as_unset(monkeypatch):
+    import importlib
+
+    import app.config
+
+    monkeypatch.setenv("AUTH_TOKEN", "   ")
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)
+
+    try:
+        with pytest.raises(RuntimeError, match="AUTH_TOKEN"):
+            importlib.reload(app.config)
+    finally:
+        monkeypatch.setenv("AUTH_TOKEN", "test-token")
+        monkeypatch.undo()
+        importlib.reload(app.config)

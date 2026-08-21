@@ -18,7 +18,16 @@ RATE_LIMIT_PER_MINUTE = 30
 
 DEFAULT_MAX_FINDINGS = 100
 
-AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "dev-token")
+# No default. Every /v1 route depends on this one value, so an unset token must
+# stop the process rather than fall back to something published in this repo:
+# a misconfigured deploy should fail loudly in the logs, not serve an open API
+# that looks perfectly healthy.
+AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "").strip()
+if not AUTH_TOKEN:
+    raise RuntimeError(
+        "AUTH_TOKEN is unset. Refusing to start: every /v1 route would be "
+        "unprotected. Set AUTH_TOKEN in the environment, or in .env locally."
+    )
 
 # Never hardcode a default here: this file is committed. Credentials come from
 # the environment, or from .env locally, which is gitignored.

@@ -32,11 +32,15 @@ jobs.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `AUTH_TOKEN` | yes | `dev-token` | Bearer token for every `/v1/*` route |
+| `AUTH_TOKEN` | **yes** | none — startup fails | Bearer token for every `/v1/*` route |
 | `GEMINI_API_KEY` | for `llm` | empty | Google Gemini key; without it `llm` jobs fail cleanly |
 | `LLM_MODEL` | no | `gemini-3.5-flash-lite` | Model id for the `llm` provider |
 | `LLM_TIMEOUT_SECONDS` | no | `20` | Per-request model timeout |
 | `PORT` | no | `8000` | Listen port |
+
+There is deliberately no default for `AUTH_TOKEN`: if it is unset the process
+refuses to start. A deploy that forgets it should fail loudly in the logs rather
+than serve an unprotected API that looks perfectly healthy.
 
 `config.py` calls `load_dotenv()` at import, so a local `.env` is read
 automatically. Real environment variables win over `.env`, which is how a
@@ -88,7 +92,7 @@ to 100 and truncates the ordered list.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest              # 122 tests, no network needed
+.venv/bin/python -m pytest              # 130 tests, no network needed
 .venv/bin/python scripts/smoke.py http://localhost:8000 my-token
 ```
 
