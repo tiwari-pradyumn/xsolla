@@ -25,7 +25,7 @@ jobs:
     # and it must be the same value the tests send. An env entry on this job
     # would win over conftest's setdefault and 401 every authenticated test.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -55,7 +55,7 @@ jobs:
     name: docker image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the image
         # Railway builds from this Dockerfile, so a build failure here is a
@@ -87,7 +87,7 @@ jobs:
     name: dependency vulnerabilities
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -105,7 +105,7 @@ jobs:
     name: secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history: a secret committed and later deleted is still leaked.
           fetch-depth: 0
@@ -118,7 +118,7 @@ jobs:
     name: refuses to start without AUTH_TOKEN
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the image
         run: docker build -t diff-review:ci .
